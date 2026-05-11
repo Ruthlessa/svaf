@@ -10,7 +10,12 @@ const modules = import.meta.glob('/src/content/posts/**/index.md', {
 });
 
 function calculateWordCount(text: string): number {
-	const plainText = text.replace(/<[^>]*>/g, '');
+	let plainText = text;
+	let previous: string;
+	do {
+		previous = plainText;
+		plainText = plainText.replace(/<[^>]*>/g, '');
+	} while (plainText !== previous);
 	const chineseChars = plainText.match(/[一-龥]/g) || [];
 	const englishWords = plainText.match(/[a-zA-Z]+/g) || [];
 	return chineseChars.length + englishWords.length;
