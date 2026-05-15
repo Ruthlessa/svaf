@@ -1,4 +1,4 @@
-export type DrawApiEnv = 'prod' | 'dev';
+﻿export type DrawApiEnv = 'prod' | 'dev';
 
 export interface DrawApiErrorPayload {
 	code?: string;
@@ -68,36 +68,6 @@ export interface DrawResolution {
 
 export interface DrawResolutionsResponse {
 	presets: DrawResolution[];
-}
-
-export interface DrawGpuInfo {
-	index: number;
-	name: string;
-	'utilization.gpu': number;
-	'utilization.memory': number;
-	'memory.used': number;
-	'memory.total': number;
-	'temperature.gpu': number;
-	'power.draw': number;
-	'power.limit': number;
-	'clocks.current.graphics': number;
-	'clocks.current.memory': number;
-	'fan.speed': number;
-}
-
-export interface DrawGpuResponse {
-	available: boolean;
-	gpus: DrawGpuInfo[];
-	poll_interval_ms?: number;
-	error?: string;
-}
-
-export interface DrawAnnouncementResponse {
-	announcement: {
-		enabled: boolean;
-		title: string;
-		content: string;
-	};
 }
 
 export interface DrawOutputItem {
@@ -191,6 +161,12 @@ export interface WsDoneMessage {
 	count: number;
 }
 
+export interface WsCostMessage {
+	type: 'cost';
+	kwh: number;
+	cost: number;
+}
+
 export interface WsErrorMessage {
 	type: 'error';
 	message: string;
@@ -221,6 +197,7 @@ export type WsRunMessage =
 	| WsPreviewMessage
 	| WsImageMessage
 	| WsDoneMessage
+	| WsCostMessage
 	| WsErrorMessage;
 
 export type WsStatusEvent =
@@ -238,6 +215,12 @@ export interface WsRunPayload {
 	height?: number | null;
 	style_tags?: string;
 	negative_prompt?: string;
+	seed?: number;
+	image1_name?: string;
+	image2_name?: string;
+	denoise?: number;
+	reverse_push?: boolean;
+	qwen?: boolean;
 }
 
 // --- Admin types ---
@@ -270,11 +253,6 @@ export interface AdminLimits {
 	gpu_cache_ttl_ms: number;
 	gc_interval_hours: number;
 	category_order: string[];
-}
-
-export interface AdminMaintenance {
-	enabled: boolean;
-	message: string;
 }
 
 export interface AdminAnnouncement {

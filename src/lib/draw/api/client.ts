@@ -1,5 +1,5 @@
 import { forumAuth } from '$lib/forum/stores/auth';
-import { drawEnv } from '../stores/env';
+import { drawEnv, resolveApiRedirect, apiError } from '../stores/env';
 import { DrawApiError } from '../types';
 import type { DrawApiErrorPayload, DrawRecommendation } from '../types';
 import { get } from 'svelte/store';
@@ -44,6 +44,7 @@ export async function drawRequest<T>(
 	path: string,
 	options: DrawRequestOptions = {}
 ): Promise<T> {
+	await resolveApiRedirect();
 	const headers = new Headers(options.headers);
 	const method = (options.method || 'GET').toUpperCase();
 	const token = forumAuth.getToken();
@@ -82,6 +83,7 @@ export async function drawRequest<T>(
 				// fall through
 			}
 		}
+		apiError.set('后端不可用，二叉树树目前可能需要使用电脑，未启用生图功能');
 		throw new DrawApiError(503, {
 			code: 'DRAW_API_UNREACHABLE',
 			message:
@@ -96,11 +98,11 @@ export async function drawRequest<T>(
 
 // --- Convenience functions ---
 
-export async function fetchWorkflows() {
+export async function fetchWorkflows(subdir?: string) {
 	return drawRequest<{
 		workflows: import('../types').DrawWorkflow[];
 		category_order: string[];
-	}>('/api/workflows');
+	}>('/api/workflows', { query: { subdir } });
 }
 
 export async function fetchWorkflowDetail(path: string, signal?: AbortSignal) {
@@ -125,14 +127,6 @@ export async function fetchMyImages() {
 	);
 }
 
-export async function fetchGpuStatus() {
-	return drawRequest<import('../types').DrawGpuResponse>('/api/gpu');
-}
-
-export async function fetchAnnouncement() {
-	return drawRequest<import('../types').DrawAnnouncementResponse>('/api/announcement');
-}
-
 export async function fetchOutputList(limit = 500, offset = 0) {
 	return drawRequest<import('../types').DrawOutputListResponse>('/api/output/list', {
 		query: { limit, offset }
@@ -153,6 +147,9 @@ export async function forkOutputImage(path: string) {
 		builtin_negative_prompt: string;
 		loras: string[];
 		format: string;
+		seed?: number;
+		style_tags?: string;
+		matched_workflow?: string;
 	}>('/api/output/fork', { method: 'POST', json: { path } });
 }
 

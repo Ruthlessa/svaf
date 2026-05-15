@@ -6,6 +6,12 @@ import { derived, get, writable } from 'svelte/store';
 export const DRAW_API_ENV_STORAGE_KEY = 'draw-api-env';
 export const DRAW_API_CUSTOM_BASE_URL_STORAGE_KEY = 'draw-api-custom-base-url';
 
+/** 全局 API 错误状态：当 drawRequest 彻底失败时设置 */
+export const apiError = writable<string | null>(null);
+
+export type ApiStatus = 'checking' | 'online' | 'offline';
+export const apiStatus = writable<ApiStatus>('checking');
+
 export const DRAW_API_BASE_URLS: Record<DrawApiEnv, string> = {
 	prod: 'https://api-ai.2x.nz',
 	dev: 'http://localhost:8080'
@@ -52,22 +58,8 @@ function createEnvStore(): DrawEnvStore {
 	const initialEnv = normalizeEnv(
 		readLocalStorage<DrawApiEnv | string>(DRAW_API_ENV_STORAGE_KEY, 'prod')
 	);
-	const initialCustomBaseUrl = sanitizeBaseUrl(
-		readLocalStorage<string>(
-			DRAW_API_CUSTOM_BASE_URL_STORAGE_KEY,
-			DRAW_API_BASE_URLS[initialEnv]
-		),
-		initialEnv
-	);
 	const envStore = writable<DrawApiEnv>(initialEnv);
-	const customBaseUrlStore = writable<string>(initialCustomBaseUrl);
-
-	customBaseUrlStore.subscribe((value) => {
-		writeLocalStorage(
-			DRAW_API_CUSTOM_BASE_URL_STORAGE_KEY,
-			sanitizeBaseUrl(value, get(envStore))
-		);
-	});
+	const customBaseUrlStore = writable<string>(DRAW_API_BASE_URLS[initialEnv]);
 
 	const baseUrl = derived([envStore, customBaseUrlStore], ([$env, $custom]) =>
 		sanitizeBaseUrl($custom, $env)
@@ -101,3 +93,22 @@ function createEnvStore(): DrawEnvStore {
 }
 
 export const drawEnv: DrawEnvStore = createEnvStore();
+
+/**
+ * 探测 API 端点是否有重定向（CDN / 负载均衡），
+ * 每次调用都发起请求，不缓存。
+ */
+export async function resolveApiRedirect(): Promise<void> {
+	apiStatus.set('checking');
+	const baseUrl = get(drawEnv.baseUrl);
+	try {
+		const resp = await fetch(baseUrl, { method: 'HEAD' });
+		const finalUrl = resp.url.replace(/\/+$/, '');
+		if (finalUrl !== baseUrl) {
+			drawEnv.customBaseUrl.set(finalUrl);
+		}
+		apiStatus.set('online');
+	} catch (e) {
+		apiStatus.set('offline');
+	}
+}

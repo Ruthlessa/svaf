@@ -10,17 +10,29 @@
 		visible = false,
 		busy = false,
 		resultImages = [],
+		cost = 0,
 		onFork
 	}: {
 		messages?: WsRunMessage[];
 		visible?: boolean;
 		busy?: boolean;
 		resultImages?: { url: string; filename: string }[];
+		cost?: number;
 		onFork?: (path: string) => void;
 	} = $props();
 
 	let llmText = $state('');
 	let llmVisible = $state(false);
+	let llmFinalPositive = $state('');
+	let llmFinalNegative = $state('');
+	let llmContainer: HTMLPreElement | undefined = $state();
+
+	$effect(() => {
+		if (llmText && llmContainer) {
+			llmContainer.scrollTop = llmContainer.scrollHeight;
+		}
+	});
+
 	let progressNode = $state('');
 	let progressValue = $state(0);
 	let progressMax = $state(0);
@@ -46,6 +58,8 @@
 			lastProcessed = 0;
 			llmText = '';
 			llmVisible = false;
+			llmFinalPositive = '';
+			llmFinalNegative = '';
 			progressNode = '';
 			progressValue = 0;
 			progressMax = 0;
@@ -72,6 +86,8 @@
 					break;
 				case 'llm_done':
 					llmVisible = false;
+					llmFinalPositive = msg.text || '';
+					llmFinalNegative = msg.negative || '';
 					break;
 				case 'progress':
 					progressNode = msg.node;
@@ -118,7 +134,7 @@
 							>
 								<img
 									src={getImageProxyUrl(img.filename)}
-									alt={img.filename}
+									alt="生成结果"
 									class="w-full object-contain max-h-64"
 									loading="lazy"
 								/>
@@ -137,8 +153,6 @@
 				<span class="font-medium flex items-center gap-1.5">
 					{#if busy}
 						<Icon icon="mdi:loading" class="size-3.5 animate-spin" />
-					{:else}
-						<Icon icon="mdi:check-circle-outline" class="size-3.5 text-green-500" />
 					{/if}
 					{progressText || '连接中...'}
 				</span>
@@ -154,17 +168,34 @@
 			</div>
 		</div>
 
+		<!-- Cost -->
+		{#if cost > 0}
+			<div class="text-[11px] text-yellow-500">
+				本次生图用电 ¥{cost.toFixed(6)}
+			</div>
+		{/if}
+
 		<!-- LLM streaming -->
-		{#if llmVisible || llmText}
+		{#if llmVisible}
 			<div class="space-y-1">
 				<div class="text-xs font-medium flex items-center gap-1.5">
 					<Icon icon="mdi:brain" class="size-3.5" />
 					LLM 处理中...
-					{#if llmVisible}
-						<Icon icon="mdi:loading" class="size-3 animate-spin" />
-					{/if}
+					<Icon icon="mdi:loading" class="size-3 animate-spin" />
 				</div>
-				<pre class="text-xs bg-yellow-50 dark:bg-yellow-950/30 border rounded-md p-2 max-h-40 overflow-y-auto whitespace-pre-wrap">{llmText}</pre>
+				<pre bind:this={llmContainer} class="text-xs bg-yellow-50 dark:bg-yellow-950/30 border rounded-md p-2 max-h-40 overflow-auto whitespace-pre-wrap resize-y">{llmText}</pre>
+			</div>
+		{/if}
+
+		<!-- Final prompt -->
+		{#if llmFinalPositive}
+			<div class="space-y-1.5">
+				<div class="text-xs font-medium">正面提示词：</div>
+				<div class="text-xs bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-md p-2 whitespace-pre-wrap">{llmFinalPositive}</div>
+				{#if llmFinalNegative}
+					<div class="text-xs font-medium mt-1">负面提示词：</div>
+					<div class="text-xs bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-md p-2 whitespace-pre-wrap">{llmFinalNegative}</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -174,7 +205,7 @@
 				<summary class="cursor-pointer text-muted-foreground hover:text-foreground">
 					日志 ({logLines.length})
 				</summary>
-				<pre class="mt-1 bg-muted rounded-md p-2 max-h-32 overflow-y-auto whitespace-pre-wrap">{logLines.join('\n')}</pre>
+				<pre class="mt-1 bg-muted rounded-md p-2 max-h-32 overflow-auto whitespace-pre-wrap resize-y">{logLines.join('\n')}</pre>
 			</details>
 		{/if}
 	</div>

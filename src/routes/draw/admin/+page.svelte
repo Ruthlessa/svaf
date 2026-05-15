@@ -15,11 +15,11 @@
 	import * as admin from '$lib/draw/api/admin';
 	import { getImageProxyUrl, getImageUrl, getThumbnailUrl, forkOutputImage } from '$lib/draw/api/client';
 	import { pendingFork } from '$lib/draw/stores/fork';
-	import ImageLightbox from '$lib/components/draw/ImageLightbox.svelte';
+	import { onMount, onDestroy } from 'svelte';
+import ImageLightbox from '$lib/components/draw/ImageLightbox.svelte';
 	import type {
 		AdminRecentImage,
 		AdminLimits,
-		AdminMaintenance,
 		AdminAnnouncement,
 		AdminLlmConfig,
 		DrawRecommendation
@@ -27,12 +27,10 @@
 
 	let authToken = $state<string | null>(null);
 	let currentBaseUrl = $state('');
-	let activeTab = $state('maintenance');
+	let activeTab = $state('announcement');
 	let loading = $state(false);
 	let message = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 
-	// Maintenance
-	let maintenance = $state<AdminMaintenance>({ enabled: false, message: '' });
 
 	// Announcement
 	let announcement = $state<AdminAnnouncement>({ enabled: false, title: '', content: '' });
@@ -44,10 +42,18 @@
 	let recentLimit = $state(50);
 	let selectedPaths = $state<Set<string>>(new Set());
 	let searchUserId = $state('');
+// Masonry layout
+let columnCount = $state(4);
+let imgColumns = $state<string[][]>([[], [], [], []]);
+let columnHeights: number[] = [0, 0, 0, 0];
+let sentinelEl: HTMLDivElement | undefined;
+let io: IntersectionObserver | null = null;
+let hasMore = $state(true);
+let loadingMore = $state(false);
 
 	// Recommendations
 	let recommendations = $state<DrawRecommendation[]>([]);
-	let recRejectReason = $state('');
+	let recRejectReasons = $state<Record<string, string>>({});
 
 	// Featured
 	let featuredPaths = $state<string[]>([]);
@@ -68,6 +74,19 @@
 	let llmThinkingOptions = $state<string[]>([]);
 	let llmTestResult = $state<{ ok: boolean; provider: string; reply?: string; error?: string } | null>(null);
 	let llmTesting = $state(false);
+
+	const thinkingLabels: Record<string, string> = {
+		off: '关闭',
+		level_minimal: 'minimal',
+		level_low: 'low',
+		level_medium: 'medium',
+		level_high: 'high',
+	};
+
+	const thinkingGroups: Array<{ label: string; options: string[] }> = [
+		{ label: '关闭', options: ['off'] },
+		{ label: 'Level (Gemini 3 系列)', options: ['level_minimal', 'level_low', 'level_medium', 'level_high'] },
+	];
 
 	// GC
 	let gcResult = $state<Record<string, number> | null>(null);
@@ -110,7 +129,10 @@
 				builtin_prompt: res.builtin_prompt,
 				builtin_negative_prompt: res.builtin_negative_prompt,
 				default_width: res.default_width,
-				default_height: res.default_height
+				default_height: res.default_height,
+				seed: res.seed,
+				style_tags: res.style_tags,
+				matched_workflow: res.matched_workflow
 			});
 			window.location.href = '/draw';
 		} catch (e) {
@@ -127,27 +149,6 @@
 	function showMsg(type: 'success' | 'error', text: string) {
 		message = { type, text };
 		setTimeout(() => (message = null), 3000);
-	}
-
-	async function loadMaintenance() {
-		try {
-			maintenance = await admin.getMaintenance();
-		} catch (e) {
-			showMsg('error', e instanceof Error ? e.message : '加载失败');
-		}
-	}
-
-	async function saveMaintenance() {
-		loading = true;
-		try {
-			const res = await admin.updateMaintenance(maintenance);
-			maintenance = res.maintenance;
-			showMsg('success', '维护模式已更新');
-		} catch (e) {
-			showMsg('error', e instanceof Error ? e.message : '保存失败');
-		} finally {
-			loading = false;
-		}
 	}
 
 	async function loadAnnouncement() {
@@ -180,6 +181,12 @@
 			recentTotal = res.total;
 			recentOffset = res.items.length;
 			selectedPaths = new Set();
+			columnCount = getColumnCount();
+			imgColumns = Array.from({ length: columnCount }, () => []);
+			columnHeights = new Array(columnCount).fill(0);
+			for (const item of res.items) pushToShortest(item.path);
+			imgColumns = [...imgColumns];
+			hasMore = recentOffset < recentTotal;
 		} catch (e) {
 			showMsg('error', e instanceof Error ? e.message : '加载失败');
 		} finally {
@@ -188,15 +195,19 @@
 	}
 
 	async function loadMoreRecent() {
-		loading = true;
+		if (loadingMore || !hasMore) return;
+		loadingMore = true;
 		try {
 			const res = await admin.getRecentImages(recentLimit, recentOffset);
 			recentImages = [...recentImages, ...res.items];
 			recentOffset += res.items.length;
+			for (const item of res.items) pushToShortest(item.path);
+			imgColumns = [...imgColumns];
+			hasMore = recentOffset < recentTotal;
 		} catch (e) {
 			showMsg('error', e instanceof Error ? e.message : '加载失败');
 		} finally {
-			loading = false;
+			loadingMore = false;
 		}
 	}
 
@@ -208,10 +219,67 @@
 			recentImages = res.items;
 			recentTotal = res.total;
 			selectedPaths = new Set();
+			rebuildColumns();
 		} catch (e) {
 			showMsg('error', e instanceof Error ? e.message : '查询失败');
 		} finally {
 			loading = false;
+		}
+	}
+
+	function getColumnCount(): number {
+		if (typeof window === 'undefined') return 4;
+		const w = window.innerWidth;
+		if (w >= 1400) return 6;
+		if (w >= 1024) return 5;
+		if (w >= 768) return 4;
+		if (w >= 480) return 3;
+		return 2;
+	}
+
+	function pushToShortest(path: string) {
+		let minIdx = 0;
+		for (let i = 1; i < columnHeights.length; i++) {
+			if (columnHeights[i] < columnHeights[minIdx]) minIdx = i;
+		}
+		imgColumns[minIdx] = [...imgColumns[minIdx], path];
+		columnHeights[minIdx] += 1;
+	}
+
+	function rebuildColumns() {
+		const flat: string[] = [];
+		while (true) {
+			let added = false;
+			for (let c = 0; c < imgColumns.length; c++) {
+				if (flat.length < recentImages.length) {
+					for (let j = c; j < recentImages.length; j += imgColumns.length) {
+						flat.push(recentImages[j].path);
+					}
+					added = true;
+					break;
+				}
+			}
+			if (!added) break;
+		}
+		columnCount = getColumnCount();
+		imgColumns = Array.from({ length: columnCount }, () => []);
+		columnHeights = new Array(columnCount).fill(0);
+		for (const p of flat) pushToShortest(p);
+		imgColumns = [...imgColumns];
+	}
+
+	function handleResize() {
+		const old = columnCount;
+		const nu = getColumnCount();
+		if (nu === old) return;
+		columnCount = nu;
+		rebuildColumns();
+	}
+
+	function handleImgLoad(e: Event) {
+		const img = e.currentTarget as HTMLImageElement;
+		if (img.naturalWidth && img.naturalHeight) {
+			img.style.aspectRatio = `${img.naturalWidth / img.naturalHeight}`;
 		}
 	}
 
@@ -290,10 +358,11 @@
 	async function resolveRec(recId: string, action: 'approve' | 'reject') {
 		loading = true;
 		try {
-			await admin.resolveRecommendation(recId, action, action === 'reject' ? recRejectReason : undefined);
+			const reason = recRejectReasons[recId] || undefined;
+			await admin.resolveRecommendation(recId, action, action === 'reject' ? reason : undefined);
 			showMsg('success', action === 'approve' ? '已通过' : '已拒绝');
 			recommendations = recommendations.filter((r) => r.id !== recId);
-			recRejectReason = '';
+			delete recRejectReasons[recId];
 		} catch (e) {
 			showMsg('error', e instanceof Error ? e.message : '处理失败');
 		} finally {
@@ -603,7 +672,7 @@
 
 	function startWfRename(wf: string) {
 		wfRenaming = wf;
-		wfRenameValue = wf.replace('.json', '');
+		wfRenameValue = wf.split('/').pop()?.replace('.json', '') || '';
 	}
 
 	async function commitWfRename() {
@@ -666,7 +735,7 @@
 		try {
 			const res = await admin.uploadWfThumbnail(file);
 			// Auto-update meta with new thumbnail filename
-			const base = wf.replace('.json', '');
+			const base = wf.split('/').pop()?.replace('.json', '') || '';
 			const updated = workflowMeta.filter((m) => m.workflow !== wf);
 			const existing = getWfMeta(wf);
 			updated.push({
@@ -691,9 +760,6 @@
 		const tab = activeTab;
 		if (!authToken) return;
 		switch (tab) {
-			case 'maintenance':
-				loadMaintenance();
-				break;
 			case 'announcement':
 				loadAnnouncement();
 				break;
@@ -721,7 +787,30 @@
 		}
 	});
 
-	function formatTime(ts: number) {
+	onMount(() => {
+	columnCount = getColumnCount();
+	imgColumns = Array.from({ length: columnCount }, () => []);
+	columnHeights = new Array(columnCount).fill(0);
+	if (sentinelEl) {
+		io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting && !loadingMore && hasMore)) loadMoreRecent();
+			},
+			{ rootMargin: '400px 0px' }
+		);
+		io.observe(sentinelEl);
+	}
+	window.addEventListener('resize', handleResize, { passive: true });
+});
+
+onDestroy(() => {
+	io?.disconnect();
+	if (typeof window !== 'undefined') {
+		window.removeEventListener('resize', handleResize);
+	}
+});
+
+function formatTime(ts: number) {
 		return new Date(ts * 1000).toLocaleString('zh-CN');
 	}
 </script>
@@ -755,9 +844,6 @@
 
 		<Tabs bind:value={activeTab} class="w-full">
 			<TabsList class="w-full flex flex-wrap gap-1 overflow-visible min-h-9 !h-auto">
-				<TabsTrigger value="maintenance" class="text-xs">
-					<Icon icon="mdi:tools" class="size-3.5 mr-1" />维护
-				</TabsTrigger>
 				<TabsTrigger value="announcement" class="text-xs">
 					<Icon icon="mdi:bullhorn-outline" class="size-3.5 mr-1" />公告
 				</TabsTrigger>
@@ -790,41 +876,6 @@
 				</TabsTrigger>
 			</TabsList>
 
-			<!-- Maintenance -->
-			<TabsContent value="maintenance" class="mt-4">
-				<Card>
-					<CardHeader>
-						<CardTitle class="text-base flex items-center gap-2">
-							维护模式
-							{#if maintenance.enabled}
-								<Badge variant="destructive">已开启</Badge>
-							{:else}
-								<Badge variant="secondary">已关闭</Badge>
-							{/if}
-						</CardTitle>
-						<CardDescription>开启后所有非管理员 API 请求将返回 503</CardDescription>
-					</CardHeader>
-					<CardContent class="space-y-4">
-						<div class="flex items-center gap-3">
-							<Switch bind:checked={maintenance.enabled} />
-							<Label>{maintenance.enabled ? '开启' : '关闭'}</Label>
-						</div>
-						<div class="space-y-1.5">
-							<Label class="text-xs">维护提示信息</Label>
-							<textarea
-								bind:value={maintenance.message}
-								rows={4}
-								placeholder="站点维护中，请稍后再试..."
-								class="w-full rounded-md border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-							></textarea>
-						</div>
-						<Button onclick={saveMaintenance} disabled={loading}>
-							<Icon icon="mdi:content-save" class="size-4 mr-1" />
-							保存
-						</Button>
-					</CardContent>
-				</Card>
-			</TabsContent>
 
 			<!-- Announcement -->
 			<TabsContent value="announcement" class="mt-4">
@@ -854,7 +905,7 @@
 								bind:value={announcement.content}
 								rows={4}
 								placeholder="公告内容..."
-								class="w-full rounded-md border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+								class="w-full rounded-md border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring"
 							></textarea>
 						</div>
 						<Button onclick={saveAnnouncement} disabled={loading}>
@@ -899,51 +950,59 @@
 						</div>
 					</CardContent>
 				</Card>
-
 				{#if recentImages.length > 0}
-					<div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
-						{#each recentImages as img}
-							<div class="relative group">
-								<button
-									class="aspect-square rounded-md overflow-hidden border w-full {selectedPaths.has(img.path) ? 'ring-2 ring-primary' : ''}"
-									onclick={() => toggleSelect(img.path)}
-								>
-									<img
-										src={getImageProxyUrl(img.path)}
-										alt={img.path}
-										class="w-full h-full object-cover"
-										loading="lazy"
-									/>
-								</button>
-								<div class="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-									<button
-										class="p-0.5 rounded bg-black/50 text-white hover:bg-black/70"
-										onclick={(e) => { e.stopPropagation(); openLb(img.path); }}
-										title="查看"
-									>
-										<Icon icon="mdi:eye" class="size-3.5" />
-									</button>
-									<button
-										class="p-0.5 rounded bg-destructive/80 text-white hover:bg-destructive"
-										onclick={(e) => { e.stopPropagation(); handleDeleteOne(img.path); }}
-										title="删除"
-									>
-										<Icon icon="mdi:delete" class="size-3.5" />
-									</button>
-								</div>
-								<div class="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[10px] px-1 py-0.5 truncate">
-									{img.user_id || '?'} | {formatTime(img.mtime)}
-								</div>
+					<div class="flex gap-2 items-start">
+						{#each imgColumns as col, ci (ci)}
+							<div class="flex flex-1 flex-col gap-2 min-w-0">
+								{#each col as path (path)}
+									{@const img = recentImages.find(i => i.path === path)}
+									{#if img}
+										<div class="relative group">
+											<button
+												class="w-full rounded-md overflow-hidden border {selectedPaths.has(img.path) ? 'ring-2 ring-primary' : ''}"
+												onclick={() => openLb(img.path)}
+											>
+												<img
+													src={getImageProxyUrl(img.path)}
+													alt={img.path}
+													loading="lazy"
+													decoding="async"
+													style="aspect-ratio: 1;"
+													onload={handleImgLoad}
+													class="block w-full h-auto bg-muted"
+												/>
+											</button>
+											<div class="absolute top-1 left-1">
+												<input
+													type="checkbox"
+													checked={selectedPaths.has(img.path)}
+													onchange={() => toggleSelect(img.path)}
+													onclick={(e) => e.stopPropagation()}
+													class="size-4 accent-primary opacity-60 group-hover:opacity-100 transition-opacity"
+												/>
+											</div>
+											<div class="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+												<button
+													class="p-0.5 rounded bg-destructive/80 text-white hover:bg-destructive"
+													onclick={(e) => { e.stopPropagation(); handleDeleteOne(img.path); }}
+													title="删除"
+												>
+													<Icon icon="mdi:delete" class="size-3.5" />
+												</button>
+											</div>
+											<div class="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[10px] px-1 py-0.5 truncate pointer-events-none">
+												{img.user_id || '?'}
+											</div>
+										</div>
+									{/if}
+								{/each}
 							</div>
 						{/each}
 					</div>
-					{#if recentOffset < recentTotal}
-						<div class="text-center">
-							<Button variant="outline" size="sm" onclick={loadMoreRecent} disabled={loading}>
-								加载更多
-							</Button>
-						</div>
+					{#if !hasMore && recentImages.length > 0}
+						<div class="text-center text-xs text-muted-foreground py-2">已加载全部</div>
 					{/if}
+					<div bind:this={sentinelEl} class="h-4"></div>
 				{/if}
 			</TabsContent>
 
@@ -1004,7 +1063,7 @@
 												通过
 											</Button>
 											<Input
-												bind:value={recRejectReason}
+												bind:value={recRejectReasons[rec.id]}
 												placeholder="拒绝理由（可选）"
 												class="h-8 text-xs flex-1 min-w-[140px]"
 											/>
@@ -1184,14 +1243,23 @@
 								</div>
 								<div class="space-y-1.5">
 									<Label class="text-xs">思维链</Label>
-									<div class="flex flex-wrap gap-1.5">
-										{#each llmThinkingOptions as opt}
-											<button
-												class="px-2 py-1 text-xs rounded border transition-colors {llmConfig.google_thinking === opt ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-accent'}"
-												onclick={() => { if (llmConfig) llmConfig.google_thinking = opt; }}
-											>{opt}</button>
-										{/each}
-									</div>
+									{#each thinkingGroups as group}
+										<div class="space-y-1">
+											{#if group.label !== '关闭'}
+												<p class="text-[10px] text-muted-foreground">{group.label}</p>
+											{/if}
+											<div class="flex flex-wrap gap-1">
+												{#each group.options as opt}
+													{#if llmThinkingOptions.includes(opt)}
+														<button
+															class="px-2 py-1 text-xs rounded border transition-colors {llmConfig.google_thinking === opt ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-accent'}"
+															onclick={() => { if (llmConfig) llmConfig.google_thinking = opt; }}
+														>{thinkingLabels[opt] || opt}</button>
+													{/if}
+												{/each}
+											</div>
+										</div>
+									{/each}
 								</div>
 							{:else if llmConfig.provider === 'custom'}
 								<div class="space-y-1.5">
@@ -1407,7 +1475,7 @@
 						{#if wfMetaEditWf}
 							<Card class="border-primary">
 								<CardHeader class="pb-2">
-									<CardTitle class="text-sm">编辑元数据: {wfMetaEditWf.replace('.json', '')}</CardTitle>
+									<CardTitle class="text-sm">编辑元数据: {wfMetaEditWf.split('/').pop()?.replace('.json', '') || ''}</CardTitle>
 								</CardHeader>
 								<CardContent class="space-y-2">
 									<div class="flex gap-2">
@@ -1481,7 +1549,7 @@
 												ondblclick={() => startWfRename(wf)}
 												oncontextmenu={(e) => { e.preventDefault(); editWfMeta(wf); }}
 											>
-												{wf.replace('.json', '')}
+												{wf.split('/').pop()?.replace('.json', '') || ''}
 											</span>
 										{/if}
 									</div>
@@ -1534,3 +1602,4 @@
 		</div>
 	{/if}
 {/snippet}
+

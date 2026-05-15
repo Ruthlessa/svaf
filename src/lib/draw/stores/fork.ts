@@ -6,6 +6,9 @@ interface ForkData {
 	builtin_negative_prompt: string;
 	default_width: number | null;
 	default_height: number | null;
+	seed?: number;
+	style_tags?: string;
+	matched_workflow?: string;
 }
 
 export const pendingFork = writable<ForkData | null>(null);
